@@ -449,7 +449,8 @@ export default function SalesforceDiagrammer() {
     const j = () => opts.x != null ? 0 : (Math.random() - 0.5) * 50;
     const label = opts.label ?? (type === "custom" ? "Custom" : NODE_TYPES[type].label);
     const n = { id: nid(), type, label, x: cx + j(), y: cy + j(), w, h, attrs: [], footer: "", fill: false,
-                ...(opts.shapeId ? { shapeId: opts.shapeId } : {}) };
+                ...(opts.shapeId ? { shapeId: opts.shapeId } : {}),
+                ...(opts.svgUrl  ? { svgUrl:  opts.svgUrl  } : {}) };
     setNodes(ns => z ? [n, ...ns] : [...ns, n]);
     setSel({ kind: "node", id: n.id });
   };
@@ -659,10 +660,10 @@ export default function SalesforceDiagrammer() {
     const t = NODE_TYPES[n.type] || { color: T.accent, label: "Custom" };
     const x = n.x - ox, y = n.y - oy;
     if (n.type === "custom") {
-      const shape = customShapes.find(s => s.id === n.shapeId);
+      const shapeUrl = n.svgUrl || customShapes.find(s => s.id === n.shapeId)?.url;
       const labelH = n.h >= 50 ? 22 : 0;
       let s = `<g><rect x="${x}" y="${y}" width="${n.w}" height="${n.h}" rx="9" fill="#FFFFFF" stroke="${T.cardBorder}" stroke-width="1.2"/>`;
-      if (shape) s += `<image href="${shape.url}" x="${x+4}" y="${y+4}" width="${n.w-8}" height="${n.h-labelH-8}" preserveAspectRatio="xMidYMid meet"/>`;
+      if (shapeUrl) s += `<image href="${shapeUrl}" x="${x+4}" y="${y+4}" width="${n.w-8}" height="${n.h-labelH-8}" preserveAspectRatio="xMidYMid meet"/>`;
       if (labelH) s += `<line x1="${x}" y1="${y+n.h-labelH}" x2="${x+n.w}" y2="${y+n.h-labelH}" stroke="${T.cardBorder}" stroke-width="1"/>
         <text x="${x+n.w/2}" y="${y+n.h-7}" text-anchor="middle" font-size="11" fill="${T.cardInk}" font-family="sans-serif">${esc(n.label)}</text>`;
       return s + "</g>";
@@ -999,9 +1000,7 @@ Description: ${aiPrompt}`;
             const dropX = (e.clientX - r.left - pan.x) / zoom - DEF.w / 2;
             const dropY = (e.clientY - r.top - pan.y) / zoom - DEF.h / 2;
             readSvgFile(file, url => {
-              const shapeId = nid("svg");
-              setCustomShapes(cs => [...cs, { id: shapeId, name: file.name, url }]);
-              addNode("custom", { shapeId, label: file.name.replace(/\.svg$/i, ""), x: dropX, y: dropY });
+              addNode("custom", { svgUrl: url, label: file.name.replace(/\.svg$/i, ""), x: dropX, y: dropY });
               flash(`${file.name} dropped onto canvas`);
             });
           }}
@@ -1078,7 +1077,7 @@ Description: ${aiPrompt}`;
 
               /* ── custom SVG node ── */
               if (n.type === "custom") {
-                const shape = customShapes.find(s => s.id === n.shapeId);
+                const shapeUrl = n.svgUrl || customShapes.find(s => s.id === n.shapeId)?.url;
                 const labelH = n.h >= 50 ? 24 : 0;
                 const borderCol = isSel || isSrc ? T.accentDeep : T.cardBorder;
                 return (
@@ -1089,9 +1088,9 @@ Description: ${aiPrompt}`;
                       borderRadius: 9, cursor: mode === "connect" ? "crosshair" : "grab", overflow: "hidden",
                       boxShadow: isSel ? `0 0 0 3px ${T.accentDeep}30, 0 10px 22px rgba(22,36,59,0.18)` : "0 3px 10px rgba(22,36,59,0.10)",
                       userSelect: "none" }}>
-                    {shape
-                      ? <img src={shape.url} style={{ width: "100%", height: n.h - labelH, objectFit: "contain", display: "block", padding: 6 }} />
-                      : <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: n.h - labelH, fontSize: 10, color: T.inkFaint }}>SVG missing</div>
+                    {shapeUrl
+                      ? <img src={shapeUrl} draggable={false} style={{ width: "100%", height: n.h - labelH, objectFit: "contain", display: "block", padding: 6, pointerEvents: "none" }} />
+                      : <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: n.h - labelH, fontSize: 10, color: T.inkFaint, pointerEvents: "none" }}>SVG missing</div>
                     }
                     {labelH > 0 && (
                       <div style={{ height: labelH, background: T.cardBg, borderTop: `1px solid ${T.cardBorder}`, display: "flex", alignItems: "center", padding: "0 8px", fontSize: 11, fontWeight: 500, color: T.cardInk, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
