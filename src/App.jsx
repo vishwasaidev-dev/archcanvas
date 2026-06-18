@@ -412,6 +412,7 @@ export default function SalesforceDiagrammer() {
   const [apiKey, setApiKey] = useState("");   // in-memory only, never persisted
   const [toast, setToast] = useState("");
   const [customShapes, setCustomShapes] = useState([]); // {id, name, url (data URL)}
+  const [ctxMenu, setCtxMenu] = useState(null); // {x, y, id, kind}
 
   const canvasRef = useRef(null);
   const dragRef = useRef(null);
@@ -480,6 +481,23 @@ export default function SalesforceDiagrammer() {
     setSel(null);
   }, [sel, snapshot]);
 
+  const deleteById = (id, kind) => {
+    snapshot();
+    if (kind === "node") {
+      setNodes(ns => ns.filter(n => n.id !== id));
+      setEdges(es => es.filter(e => e.from !== id && e.to !== id));
+    } else {
+      setEdges(es => es.filter(e => e.id !== id));
+    }
+    setSel(null); setCtxMenu(null);
+  };
+
+  const onCtxMenu = (e, id, kind) => {
+    e.preventDefault(); e.stopPropagation();
+    setSel({ kind, id });
+    setCtxMenu({ x: e.clientX, y: e.clientY, id, kind });
+  };
+
   const bringFront = () => { if (!selNode) return; snapshot(); setNodes(ns => [...ns.filter(n => n.id !== selNode.id), selNode]); };
   const sendBack  = () => { if (!selNode) return; snapshot(); setNodes(ns => [selNode, ...ns.filter(n => n.id !== selNode.id)]); };
 
@@ -523,7 +541,7 @@ export default function SalesforceDiagrammer() {
   };
 
   const onCanvasDown = e => {
-    setSel(null); setConnectFrom(null); setTplOpen(false);
+    setSel(null); setConnectFrom(null); setTplOpen(false); setCtxMenu(null);
     panRef.current = { sx: e.clientX, sy: e.clientY, px: pan.x, py: pan.y };
   };
 
@@ -1004,6 +1022,7 @@ Description: ${aiPrompt}`;
               flash(`${file.name} dropped onto canvas`);
             });
           }}
+          onContextMenu={e => e.preventDefault()}
           style={{ flex: 1, position: "relative", overflow: "hidden", background: T.paper,
             cursor: panRef.current ? "grabbing" : mode === "connect" ? "crosshair" : "default",
             backgroundImage: `radial-gradient(${T.paperDot} 1px, transparent 1px)`,
@@ -1017,7 +1036,7 @@ Description: ${aiPrompt}`;
               const t = NODE_TYPES[n.type];
               const isSel = sel?.kind === "node" && sel.id === n.id;
               return (
-                <div key={n.id} onMouseDown={e => onNodeDown(e, n)}
+                <div key={n.id} onMouseDown={e => onNodeDown(e, n)} onContextMenu={e => onCtxMenu(e, n.id, "node")}
                   style={{ position: "absolute", left: n.x, top: n.y, width: n.w, height: n.h,
                     background: `${t.color}0d`, border: `1.6px dashed ${isSel ? T.accentDeep : t.color}`,
                     borderRadius: 12, cursor: "grab",
@@ -1049,7 +1068,8 @@ Description: ${aiPrompt}`;
                 return (
                   <g key={ed.id}>
                     <path d={d} fill="none" stroke="transparent" strokeWidth={14} style={{ pointerEvents: "stroke", cursor: "pointer" }}
-                      onMouseDown={e => { e.stopPropagation(); setSel({ kind: "edge", id: ed.id }); }} />
+                      onMouseDown={e => { e.stopPropagation(); setSel({ kind: "edge", id: ed.id }); }}
+                      onContextMenu={e => onCtxMenu(e, ed.id, "edge")} />
                     <path d={d} fill="none" stroke={isSel ? T.accentDeep : T.edge} strokeWidth={isSel ? 2.3 : 1.6}
                       strokeDasharray={ed.style === "dashed" ? "6 5" : "none"}
                       markerEnd={isSel ? "url(#arrowSel)" : "url(#arrow)"} style={{ pointerEvents: "none" }} />
@@ -1081,7 +1101,7 @@ Description: ${aiPrompt}`;
                 const labelH = n.h >= 50 ? 24 : 0;
                 const borderCol = isSel || isSrc ? T.accentDeep : T.cardBorder;
                 return (
-                  <div key={n.id} onMouseDown={e => onNodeDown(e, n)}
+                  <div key={n.id} onMouseDown={e => onNodeDown(e, n)} onContextMenu={e => onCtxMenu(e, n.id, "node")}
                     onDoubleClick={e => { e.stopPropagation(); setSel({ kind: "node", id: n.id }); setTimeout(() => document.getElementById("label-input")?.focus(), 30); }}
                     style={{ position: "absolute", left: n.x, top: n.y, width: n.w, height: n.h,
                       background: T.cardBg, border: `1.4px solid ${borderCol}`,
@@ -1115,7 +1135,7 @@ Description: ${aiPrompt}`;
               const footH = showFooter ? 22 : 0;
               const showAttrs = n.attrs?.length > 0 && n.h >= 92;
               return (
-                <div key={n.id} onMouseDown={e => onNodeDown(e, n)}
+                <div key={n.id} onMouseDown={e => onNodeDown(e, n)} onContextMenu={e => onCtxMenu(e, n.id, "node")}
                   onDoubleClick={e => { e.stopPropagation(); setSel({ kind: "node", id: n.id }); setTimeout(() => document.getElementById("label-input")?.focus(), 30); }}
                   style={{
                     position: "absolute", left: n.x, top: n.y, width: n.w, height: n.h,
@@ -1263,6 +1283,30 @@ Description: ${aiPrompt}`;
           </div>
         )}
       </div>
+
+      {/* ── Context menu ── */}
+      {ctxMenu && (
+        <div onMouseDown={e => e.stopPropagation()}
+          style={{ position: "fixed", left: ctxMenu.x, top: ctxMenu.y, zIndex: 200,
+            background: T.panel, border: `1px solid ${T.panelBorder}`, borderRadius: 9,
+            padding: 4, boxShadow: "0 8px 28px rgba(0,0,0,0.5)", minWidth: 150 }}>
+          {ctxMenu.kind === "node" && <>
+            <button onClick={() => { const n = nodes.find(x => x.id === ctxMenu.id); if (n) { snapshot(); setNodes(ns => [...ns.filter(x => x.id !== n.id), n]); } setCtxMenu(null); }}
+              style={{ display:"flex", alignItems:"center", gap:8, width:"100%", padding:"7px 12px", background:"none", border:"none", borderRadius:6, color:T.ink, cursor:"pointer", fontSize:12.5, fontFamily:T.fontBody }}>
+              <ArrowUpToLine size={13}/> Bring to front
+            </button>
+            <button onClick={() => { const n = nodes.find(x => x.id === ctxMenu.id); if (n) { snapshot(); setNodes(ns => [n, ...ns.filter(x => x.id !== n.id)]); } setCtxMenu(null); }}
+              style={{ display:"flex", alignItems:"center", gap:8, width:"100%", padding:"7px 12px", background:"none", border:"none", borderRadius:6, color:T.ink, cursor:"pointer", fontSize:12.5, fontFamily:T.fontBody }}>
+              <ArrowDownToLine size={13}/> Send to back
+            </button>
+            <div style={{ height:1, background:T.panelBorder, margin:"3px 0" }}/>
+          </>}
+          <button onClick={() => deleteById(ctxMenu.id, ctxMenu.kind)}
+            style={{ display:"flex", alignItems:"center", gap:8, width:"100%", padding:"7px 12px", background:"none", border:"none", borderRadius:6, color:T.danger, cursor:"pointer", fontSize:12.5, fontFamily:T.fontBody }}>
+            <Trash2 size={13}/> Delete
+          </button>
+        </div>
+      )}
     </div>
   );
 }
