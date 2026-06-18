@@ -118,17 +118,41 @@ const nid = (p = "n") => `${p}${++_id}`;
 const isZone = n => n.type === "zone";
 const cx2 = n => n.x + n.w, cy2 = n => n.y + n.h;
 
-/* ---------------- elbow connector routing (kit-of-parts) ---------- */
-function elbow(a, b) {
-  const x1 = a.x + a.w, y1 = a.y + a.h / 2;
-  const x2 = b.x,       y2 = b.y + b.h / 2;
-  if (x2 - x1 >= 44) {
-    const m = (x1 + x2) / 2;
-    return { d: `M ${x1},${y1} L ${m},${y1} L ${m},${y2} L ${x2},${y2}`, mx: m, my: (y1 + y2) / 2 };
+/* ---------------- connection side helpers -------------------------- */
+function sidePoint(n, side) {
+  switch (side) {
+    case "left":   return { x: n.x,           y: n.y + n.h / 2 };
+    case "top":    return { x: n.x + n.w / 2, y: n.y };
+    case "bottom": return { x: n.x + n.w / 2, y: n.y + n.h };
+    default:       return { x: n.x + n.w,     y: n.y + n.h / 2 }; // right
   }
-  const out = x1 + 26, back = x2 - 26, midY = (y1 + y2) / 2;
-  return { d: `M ${x1},${y1} L ${out},${y1} L ${out},${midY} L ${back},${midY} L ${back},${y2} L ${x2},${y2}`,
-           mx: (out + back) / 2, my: midY };
+}
+function nearestSide(n, px, py) {
+  return ["right","left","top","bottom"].reduce((best, s) => {
+    const sp = sidePoint(n, s), bsp = sidePoint(n, best);
+    return Math.hypot(px-sp.x,py-sp.y) < Math.hypot(px-bsp.x,py-bsp.y) ? s : best;
+  }, "left");
+}
+
+/* ---------------- elbow connector routing -------------------------- */
+function elbow(a, b, fromSide = "right", toSide = "left") {
+  const { x: x1, y: y1 } = sidePoint(a, fromSide);
+  const { x: x2, y: y2 } = sidePoint(b, toSide);
+  const horiz = fromSide === "right" || fromSide === "left";
+  if (horiz) {
+    if ((fromSide === "right" ? x2 - x1 : x1 - x2) >= 44) {
+      const m = (x1 + x2) / 2;
+      return { d: `M ${x1},${y1} L ${m},${y1} L ${m},${y2} L ${x2},${y2}`, mx: m, my: (y1+y2)/2 };
+    }
+    const out = x1 + (fromSide === "right" ? 26 : -26);
+    const back = x2 + (toSide === "left" ? -26 : 26);
+    const midY = (y1 + y2) / 2;
+    return { d: `M ${x1},${y1} L ${out},${y1} L ${out},${midY} L ${back},${midY} L ${back},${y2} L ${x2},${y2}`,
+             mx: (out+back)/2, my: midY };
+  } else {
+    const m = (y1 + y2) / 2;
+    return { d: `M ${x1},${y1} L ${x1},${m} L ${x2},${m} L ${x2},${y2}`, mx: (x1+x2)/2, my: m };
+  }
 }
 
 /* ---------------- layered auto-layout ----------------------------- */
@@ -387,6 +411,7 @@ export default function SalesforceDiagrammer() {
   const [provider, setProvider] = useState("anthropic");
   const [apiKey, setApiKey] = useState("");   // in-memory only, never persisted
   const [toast, setToast] = useState("");
+  const [customShapes, setCustomShapes] = useState([]); // {id, name, url (data URL)}
 
   const canvasRef = useRef(null);
   const dragRef = useRef(null);
@@ -394,6 +419,7 @@ export default function SalesforceDiagrammer() {
   const panRef = useRef(null);
   const history = useRef([]);
   const fileRef = useRef(null);
+  const svgImportRef = useRef(null);
 
   const selNode = sel?.kind === "node" ? nodes.find(n => n.id === sel.id) : null;
   const selEdge = sel?.kind === "edge" ? edges.find(e => e.id === sel.id) : null;
@@ -413,18 +439,34 @@ export default function SalesforceDiagrammer() {
   };
 
   /* ---------- node ops ---------- */
-  const addNode = type => {
+  const addNode = (type, opts = {}) => {
     snapshot();
     const r = canvasRef.current?.getBoundingClientRect();
     const z = isZone({ type });
-    const w = z ? DEF_ZONE.w : DEF.w, h = z ? DEF_ZONE.h : DEF.h;
-    const cx = r ? (r.width / 2 - pan.x) / zoom - w / 2 : 200;
-    const cy = r ? (r.height / 2 - pan.y) / zoom - h / 2 : 150;
-    const j = () => (Math.random() - 0.5) * 50;
-    const n = { id: nid(), type, label: NODE_TYPES[type].label, x: cx + j(), y: cy + j(), w, h, attrs: [], footer: "", fill: false };
-    // zones go to back, others to front
+    const w = opts.w ?? (z ? DEF_ZONE.w : DEF.w), h = opts.h ?? (z ? DEF_ZONE.h : DEF.h);
+    const cx = opts.x ?? (r ? (r.width / 2 - pan.x) / zoom - w / 2 : 200);
+    const cy = opts.y ?? (r ? (r.height / 2 - pan.y) / zoom - h / 2 : 150);
+    const j = () => opts.x != null ? 0 : (Math.random() - 0.5) * 50;
+    const label = opts.label ?? (type === "custom" ? "Custom" : NODE_TYPES[type].label);
+    const n = { id: nid(), type, label, x: cx + j(), y: cy + j(), w, h, attrs: [], footer: "", fill: false,
+                ...(opts.shapeId ? { shapeId: opts.shapeId } : {}) };
     setNodes(ns => z ? [n, ...ns] : [...ns, n]);
     setSel({ kind: "node", id: n.id });
+  };
+
+  /* ---------- SVG import ---------- */
+  const readSvgFile = (file, onDone) => {
+    const reader = new FileReader();
+    reader.onload = e => onDone(e.target.result); // data URL
+    reader.readAsDataURL(file);
+  };
+  const importSvgToPalette = file => {
+    if (!file) return;
+    readSvgFile(file, url => {
+      const id = nid("svg");
+      setCustomShapes(cs => [...cs, { id, name: file.name, url }]);
+      flash(`SVG imported: ${file.name}`);
+    });
   };
 
   const deleteSelection = useCallback(() => {
@@ -447,7 +489,9 @@ export default function SalesforceDiagrammer() {
       if (!connectFrom) setConnectFrom(node.id);
       else if (connectFrom !== node.id) {
         snapshot();
-        setEdges(es => [...es, { id: nid("e"), from: connectFrom, to: node.id, label: "", style: "solid" }]);
+        const p2 = toCanvas(e.clientX, e.clientY);
+        setEdges(es => [...es, { id: nid("e"), from: connectFrom, to: node.id, label: "", style: "solid",
+                                 fromSide: "right", toSide: nearestSide(node, p2.x, p2.y) }]);
         setConnectFrom(null); setMode("select");
       }
       return;
@@ -465,10 +509,10 @@ export default function SalesforceDiagrammer() {
     dragRef.current = { id: node.id, ox: p.x - node.x, oy: p.y - node.y, moved: false, group };
   };
 
-  const onHandleDown = (e, node) => {
+  const onHandleDown = (e, node, side = "right") => {
     e.stopPropagation();
     const p = toCanvas(e.clientX, e.clientY);
-    setLinking({ from: node.id, x: p.x, y: p.y });
+    setLinking({ from: node.id, side, x: p.x, y: p.y });
   };
 
   const onResizeDown = (e, node, dir) => {
@@ -522,8 +566,10 @@ export default function SalesforceDiagrammer() {
         n.id !== linking.from && !isZone(n) &&
         p.x >= n.x && p.x <= cx2(n) && p.y >= n.y && p.y <= cy2(n));
       if (target) {
+        const toSide = nearestSide(target, p.x, p.y);
         snapshot();
-        setEdges(es => [...es, { id: nid("e"), from: linking.from, to: target.id, label: "", style: "solid" }]);
+        setEdges(es => [...es, { id: nid("e"), from: linking.from, to: target.id, label: "", style: "solid",
+                                 fromSide: linking.side || "right", toSide }]);
       }
       setLinking(null);
     }
@@ -584,7 +630,7 @@ export default function SalesforceDiagrammer() {
     URL.revokeObjectURL(url);
   };
   const exportJSON = () => {
-    downloadBlob(new Blob([JSON.stringify({ header, nodes, edges }, null, 2)], { type: "application/json" }), "sf-architecture.json");
+    downloadBlob(new Blob([JSON.stringify({ header, nodes, edges, customShapes }, null, 2)], { type: "application/json" }), "sf-architecture.json");
     flash("Diagram saved as JSON");
   };
   const importJSON = e => {
@@ -599,6 +645,7 @@ export default function SalesforceDiagrammer() {
         setNodes(d.nodes.map(n => ({ w: isZone(n) ? DEF_ZONE.w : DEF.w, h: isZone(n) ? DEF_ZONE.h : DEF.h, attrs: [], footer: "", fill: false, ...n })));
         setEdges(d.edges.map(ed => ({ style: "solid", ...ed })));
         if (d.header) setHeader(d.header);
+        if (Array.isArray(d.customShapes)) setCustomShapes(d.customShapes);
         setSel(null); flash("Diagram loaded"); setTimeout(fitView, 50);
       } catch { flash("That file isn't a valid diagram JSON"); }
     };
@@ -609,8 +656,17 @@ export default function SalesforceDiagrammer() {
   const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
   const cardSVG = (n, ox, oy) => {
-    const t = NODE_TYPES[n.type];
+    const t = NODE_TYPES[n.type] || { color: T.accent, label: "Custom" };
     const x = n.x - ox, y = n.y - oy;
+    if (n.type === "custom") {
+      const shape = customShapes.find(s => s.id === n.shapeId);
+      const labelH = n.h >= 50 ? 22 : 0;
+      let s = `<g><rect x="${x}" y="${y}" width="${n.w}" height="${n.h}" rx="9" fill="#FFFFFF" stroke="${T.cardBorder}" stroke-width="1.2"/>`;
+      if (shape) s += `<image href="${shape.url}" x="${x+4}" y="${y+4}" width="${n.w-8}" height="${n.h-labelH-8}" preserveAspectRatio="xMidYMid meet"/>`;
+      if (labelH) s += `<line x1="${x}" y1="${y+n.h-labelH}" x2="${x+n.w}" y2="${y+n.h-labelH}" stroke="${T.cardBorder}" stroke-width="1"/>
+        <text x="${x+n.w/2}" y="${y+n.h-7}" text-anchor="middle" font-size="11" fill="${T.cardInk}" font-family="sans-serif">${esc(n.label)}</text>`;
+      return s + "</g>";
+    }
     if (isZone(n)) {
       return `<g><rect x="${x}" y="${y}" width="${n.w}" height="${n.h}" rx="10" fill="${t.color}10" stroke="${t.color}" stroke-width="1.4" stroke-dasharray="7 5"/>
         <text x="${x + 14}" y="${y + 22}" font-size="12" font-weight="600" letter-spacing="1" fill="${t.color}" font-family="sans-serif">${esc(n.label.toUpperCase())}</text></g>`;
@@ -676,7 +732,7 @@ export default function SalesforceDiagrammer() {
     edges.forEach(ed => {
       const a = nodes.find(n => n.id === ed.from), b = nodes.find(n => n.id === ed.to);
       if (!a || !b) return;
-      const { d, mx, my } = elbow({ ...a, x: a.x - minX, y: a.y - oy }, { ...b, x: b.x - minX, y: b.y - oy });
+      const { d, mx, my } = elbow({ ...a, x: a.x - minX, y: a.y - oy }, { ...b, x: b.x - minX, y: b.y - oy }, ed.fromSide || "right", ed.toSide || "left");
       s += `<path d="${d}" fill="none" stroke="${T.edge}" stroke-width="1.6" ${ed.style === "dashed" ? 'stroke-dasharray="6 5"' : ""} marker-end="url(#arr)"/>`;
       if (ed.label) {
         const pw = ed.label.length * 6.2 + 18;
@@ -902,11 +958,53 @@ Description: ${aiPrompt}`;
           <div style={{ marginTop: 12, padding: 10, borderRadius: 9, background: "rgba(76,166,248,0.06)", border: "1px solid rgba(76,166,248,0.18)", fontSize: 11, lineHeight: 1.55, color: T.inkDim }}>
             Select a card to resize it from its edges, edit attributes & API-name footer, or change its stacking order. Zones drag their contents with them.
           </div>
+
+          {/* ── Custom SVG shapes ── */}
+          <div style={{ height: 1, background: T.panelBorder, margin: "12px 0 10px" }} />
+          <div style={{ fontFamily: T.fontMono, fontSize: 10, letterSpacing: "0.12em", color: T.inkFaint, marginBottom: 8 }}>CUSTOM SVG</div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 10px", marginBottom: 8, background: "rgba(76,166,248,0.07)", border: `1px dashed ${T.accent}55`, borderRadius: 9, color: T.accent, cursor: "pointer", fontSize: 12, fontFamily: T.fontBody }}>
+            <Upload size={13} /> Import SVG…
+            <input type="file" accept=".svg,image/svg+xml" ref={svgImportRef} style={{ display: "none" }}
+              onChange={e => { importSvgToPalette(e.target.files[0]); e.target.value = ""; }} />
+          </label>
+          {customShapes.length === 0 && (
+            <div style={{ fontSize: 10.5, color: T.inkFaint, lineHeight: 1.55 }}>
+              Drop a .svg onto the canvas, or use Import above. Shapes appear here and can be placed like any card.
+            </div>
+          )}
+          {customShapes.map(s => (
+            <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+              <button onClick={() => addNode("custom", { shapeId: s.id, label: s.name.replace(/\.svg$/i, "") })}
+                style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, padding: "6px 8px", background: "rgba(255,255,255,0.025)", border: `1px solid ${T.panelBorder}`, borderRadius: 8, color: T.ink, cursor: "pointer", fontSize: 11.5, fontFamily: T.fontBody, textAlign: "left", minWidth: 0 }}>
+                <img src={s.url} style={{ width: 24, height: 24, objectFit: "contain", borderRadius: 4, background: "#fff", flexShrink: 0 }} />
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name.replace(/\.svg$/i, "")}</span>
+              </button>
+              <button onClick={() => setCustomShapes(cs => cs.filter(c => c.id !== s.id))}
+                style={{ background: "none", border: "none", color: T.inkFaint, cursor: "pointer", padding: 4, flexShrink: 0, display: "flex" }}>
+                <X size={12} />
+              </button>
+            </div>
+          ))}
         </div>
 
         {/* Canvas (paper) */}
         <div ref={canvasRef}
           onMouseDown={onCanvasDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} onWheel={onWheel}
+          onDragOver={e => e.preventDefault()}
+          onDrop={e => {
+            e.preventDefault();
+            const file = [...e.dataTransfer.files].find(f => f.name.toLowerCase().endsWith(".svg") || f.type === "image/svg+xml");
+            if (!file) return;
+            const r = canvasRef.current.getBoundingClientRect();
+            const dropX = (e.clientX - r.left - pan.x) / zoom - DEF.w / 2;
+            const dropY = (e.clientY - r.top - pan.y) / zoom - DEF.h / 2;
+            readSvgFile(file, url => {
+              const shapeId = nid("svg");
+              setCustomShapes(cs => [...cs, { id: shapeId, name: file.name, url }]);
+              addNode("custom", { shapeId, label: file.name.replace(/\.svg$/i, ""), x: dropX, y: dropY });
+              flash(`${file.name} dropped onto canvas`);
+            });
+          }}
           style={{ flex: 1, position: "relative", overflow: "hidden", background: T.paper,
             cursor: panRef.current ? "grabbing" : mode === "connect" ? "crosshair" : "default",
             backgroundImage: `radial-gradient(${T.paperDot} 1px, transparent 1px)`,
@@ -946,7 +1044,7 @@ Description: ${aiPrompt}`;
               {edges.map(ed => {
                 const a = nodes.find(n => n.id === ed.from), b = nodes.find(n => n.id === ed.to);
                 if (!a || !b) return null;
-                const { d, mx, my } = elbow(a, b);
+                const { d, mx, my } = elbow(a, b, ed.fromSide || "right", ed.toSide || "left");
                 const isSel = sel?.kind === "edge" && sel.id === ed.id;
                 const pw = ed.label ? ed.label.length * 6.4 + 18 : 0;
                 return (
@@ -967,16 +1065,53 @@ Description: ${aiPrompt}`;
                 );
               })}
               {linking && linkSrc && (
-                <path d={elbow(linkSrc, { x: linking.x, y: linking.y - 8, w: 0, h: 16 }).d}
+                <path d={elbow(linkSrc, { x: linking.x, y: linking.y - 8, w: 0, h: 16 }, linking.side || "right", "left").d}
                   fill="none" stroke={T.accentDeep} strokeWidth={1.8} strokeDasharray="5 4" />
               )}
             </svg>
 
             {/* cards */}
             {nodes.filter(n => !isZone(n)).map(n => {
-              const t = NODE_TYPES[n.type];
               const isSel = sel?.kind === "node" && sel.id === n.id;
               const isSrc = connectFrom === n.id;
+              const SIDES = [["right",{right:-7,top:"50%",transform:"translateY(-50%)"}],["left",{left:-7,top:"50%",transform:"translateY(-50%)"}],["top",{top:-7,left:"50%",transform:"translateX(-50%)"}],["bottom",{bottom:-7,left:"50%",transform:"translateX(-50%)"}]];
+
+              /* ── custom SVG node ── */
+              if (n.type === "custom") {
+                const shape = customShapes.find(s => s.id === n.shapeId);
+                const labelH = n.h >= 50 ? 24 : 0;
+                const borderCol = isSel || isSrc ? T.accentDeep : T.cardBorder;
+                return (
+                  <div key={n.id} onMouseDown={e => onNodeDown(e, n)}
+                    onDoubleClick={e => { e.stopPropagation(); setSel({ kind: "node", id: n.id }); setTimeout(() => document.getElementById("label-input")?.focus(), 30); }}
+                    style={{ position: "absolute", left: n.x, top: n.y, width: n.w, height: n.h,
+                      background: T.cardBg, border: `1.4px solid ${borderCol}`,
+                      borderRadius: 9, cursor: mode === "connect" ? "crosshair" : "grab", overflow: "hidden",
+                      boxShadow: isSel ? `0 0 0 3px ${T.accentDeep}30, 0 10px 22px rgba(22,36,59,0.18)` : "0 3px 10px rgba(22,36,59,0.10)",
+                      userSelect: "none" }}>
+                    {shape
+                      ? <img src={shape.url} style={{ width: "100%", height: n.h - labelH, objectFit: "contain", display: "block", padding: 6 }} />
+                      : <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: n.h - labelH, fontSize: 10, color: T.inkFaint }}>SVG missing</div>
+                    }
+                    {labelH > 0 && (
+                      <div style={{ height: labelH, background: T.cardBg, borderTop: `1px solid ${T.cardBorder}`, display: "flex", alignItems: "center", padding: "0 8px", fontSize: 11, fontWeight: 500, color: T.cardInk, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
+                        {n.label}
+                      </div>
+                    )}
+                    {SIDES.map(([side, pos]) => (
+                      <div key={side} onMouseDown={e => onHandleDown(e, n, side)} title={`Connect from ${side}`}
+                        style={{ position: "absolute", width: 11, height: 11, borderRadius: "50%", background: T.paper, border: `2.5px solid ${T.accentDeep}`, cursor: "crosshair", zIndex: 2, ...pos }} />
+                    ))}
+                    {isSel && <>
+                      <ResizeHandle dir="e" node={n} onDown={onResizeDown} />
+                      <ResizeHandle dir="s" node={n} onDown={onResizeDown} />
+                      <ResizeHandle dir="se" node={n} onDown={onResizeDown} />
+                    </>}
+                  </div>
+                );
+              }
+
+              const t = NODE_TYPES[n.type];
               const showFooter = n.footer && n.h >= 86;
               const footH = showFooter ? 22 : 0;
               const showAttrs = n.attrs?.length > 0 && n.h >= 92;
@@ -1013,8 +1148,10 @@ Description: ${aiPrompt}`;
                       {n.footer}
                     </div>
                   )}
-                  <div onMouseDown={e => onHandleDown(e, n)} title="Drag to connect"
-                    style={{ position: "absolute", right: -7, top: "50%", transform: "translateY(-50%)", width: 13, height: 13, borderRadius: "50%", background: T.paper, border: `2.5px solid ${t.color}`, cursor: "crosshair", zIndex: 2 }} />
+                  {[["right",{right:-7,top:"50%",transform:"translateY(-50%)"}],["left",{left:-7,top:"50%",transform:"translateY(-50%)"}],["top",{top:-7,left:"50%",transform:"translateX(-50%)"}],["bottom",{bottom:-7,left:"50%",transform:"translateX(-50%)"}]].map(([side,pos])=>(
+                    <div key={side} onMouseDown={e=>onHandleDown(e,n,side)} title="Drag to connect"
+                      style={{position:"absolute",width:11,height:11,borderRadius:"50%",background:T.paper,border:`2.5px solid ${t.color}`,cursor:"crosshair",zIndex:2,...pos}}/>
+                  ))}
                   {isSel && <>
                     <ResizeHandle dir="e"  node={n} onDown={onResizeDown} />
                     <ResizeHandle dir="s"  node={n} onDown={onResizeDown} />
