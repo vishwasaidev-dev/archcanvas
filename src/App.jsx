@@ -1105,18 +1105,21 @@ Description: ${aiPrompt}`;
                     onDoubleClick={e => { e.stopPropagation(); setSel({ kind: "node", id: n.id }); setTimeout(() => document.getElementById("label-input")?.focus(), 30); }}
                     style={{ position: "absolute", left: n.x, top: n.y, width: n.w, height: n.h,
                       background: T.cardBg, border: `1.4px solid ${borderCol}`,
-                      borderRadius: 9, cursor: mode === "connect" ? "crosshair" : "grab", overflow: "hidden",
+                      borderRadius: 9, cursor: mode === "connect" ? "crosshair" : "grab",
                       boxShadow: isSel ? `0 0 0 3px ${T.accentDeep}30, 0 10px 22px rgba(22,36,59,0.18)` : "0 3px 10px rgba(22,36,59,0.10)",
                       userSelect: "none" }}>
-                    {shapeUrl
-                      ? <img src={shapeUrl} draggable={false} style={{ width: "100%", height: n.h - labelH, objectFit: "contain", display: "block", padding: 6, pointerEvents: "none" }} />
-                      : <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: n.h - labelH, fontSize: 10, color: T.inkFaint, pointerEvents: "none" }}>SVG missing</div>
-                    }
-                    {labelH > 0 && (
-                      <div style={{ height: labelH, background: T.cardBg, borderTop: `1px solid ${T.cardBorder}`, display: "flex", alignItems: "center", padding: "0 8px", fontSize: 11, fontWeight: 500, color: T.cardInk, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
-                        {n.label}
-                      </div>
-                    )}
+                    {/* image wrapper clips to rounded card bounds without clipping the handles */}
+                    <div style={{ position: "absolute", inset: 0, borderRadius: 9, overflow: "hidden", pointerEvents: "none" }}>
+                      {shapeUrl
+                        ? <img src={shapeUrl} draggable={false} style={{ width: "100%", height: n.h - labelH, objectFit: "contain", display: "block", padding: 6 }} />
+                        : <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: n.h - labelH, fontSize: 10, color: T.inkFaint }}>SVG missing</div>
+                      }
+                      {labelH > 0 && (
+                        <div style={{ height: labelH, background: T.cardBg, borderTop: `1px solid ${T.cardBorder}`, display: "flex", alignItems: "center", padding: "0 8px", fontSize: 11, fontWeight: 500, color: T.cardInk, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {n.label}
+                        </div>
+                      )}
+                    </div>
                     {SIDES.map(([side, pos]) => (
                       <div key={side} onMouseDown={e => onHandleDown(e, n, side)} title={`Connect from ${side}`}
                         style={{ position: "absolute", width: 11, height: 11, borderRadius: "50%", background: T.paper, border: `2.5px solid ${T.accentDeep}`, cursor: "crosshair", zIndex: 2, ...pos }} />
