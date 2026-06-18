@@ -135,24 +135,26 @@ function nearestSide(n, px, py) {
 }
 
 /* ---------------- elbow connector routing -------------------------- */
+// S = stub length: connector always exits/enters perpendicular to its handle before routing.
+// Handles all 16 fromSide×toSide combos without running along node edges.
+const S = 36;
 function elbow(a, b, fromSide = "right", toSide = "left") {
   const { x: x1, y: y1 } = sidePoint(a, fromSide);
   const { x: x2, y: y2 } = sidePoint(b, toSide);
+  // Exit stub: leave source perpendicularly
+  const ex = fromSide === "right" ? x1 + S : fromSide === "left" ? x1 - S : x1;
+  const ey = fromSide === "bottom" ? y1 + S : fromSide === "top" ? y1 - S : y1;
+  // Entry stub: approach target perpendicularly from outside
+  const nx = toSide === "right" ? x2 + S : toSide === "left" ? x2 - S : x2;
+  const ny = toSide === "bottom" ? y2 + S : toSide === "top" ? y2 - S : y2;
+  // Single corner: horizontal exit bends at (nx, ey); vertical exit bends at (ex, ny)
   const horiz = fromSide === "right" || fromSide === "left";
-  if (horiz) {
-    if ((fromSide === "right" ? x2 - x1 : x1 - x2) >= 44) {
-      const m = (x1 + x2) / 2;
-      return { d: `M ${x1},${y1} L ${m},${y1} L ${m},${y2} L ${x2},${y2}`, mx: m, my: (y1+y2)/2 };
-    }
-    const out = x1 + (fromSide === "right" ? 26 : -26);
-    const back = x2 + (toSide === "left" ? -26 : 26);
-    const midY = (y1 + y2) / 2;
-    return { d: `M ${x1},${y1} L ${out},${y1} L ${out},${midY} L ${back},${midY} L ${back},${y2} L ${x2},${y2}`,
-             mx: (out+back)/2, my: midY };
-  } else {
-    const m = (y1 + y2) / 2;
-    return { d: `M ${x1},${y1} L ${x1},${m} L ${x2},${m} L ${x2},${y2}`, mx: (x1+x2)/2, my: m };
-  }
+  const cx = horiz ? nx : ex;
+  const cy = horiz ? ey : ny;
+  return {
+    d: `M ${x1},${y1} L ${ex},${ey} L ${cx},${cy} L ${nx},${ny} L ${x2},${y2}`,
+    mx: (ex + nx) / 2, my: (ey + ny) / 2,
+  };
 }
 
 /* ---------------- layered auto-layout ----------------------------- */
@@ -1083,10 +1085,17 @@ Description: ${aiPrompt}`;
                   </g>
                 );
               })}
-              {linking && linkSrc && (
-                <path d={elbow(linkSrc, { x: linking.x, y: linking.y - 8, w: 0, h: 16 }, linking.side || "right", "left").d}
-                  fill="none" stroke={T.accentDeep} strokeWidth={1.8} strokeDasharray="5 4" />
-              )}
+              {linking && linkSrc && (() => {
+                const fs = linking.side || "right";
+                const { x: sx, y: sy } = sidePoint(linkSrc, fs);
+                const ex2 = fs === "right" ? sx + S : fs === "left" ? sx - S : sx;
+                const ey2 = fs === "bottom" ? sy + S : fs === "top" ? sy - S : sy;
+                const tx = linking.x, ty = linking.y;
+                const horiz2 = fs === "right" || fs === "left";
+                const cx2 = horiz2 ? tx : ex2, cy2 = horiz2 ? ey2 : ty;
+                return <path d={`M ${sx},${sy} L ${ex2},${ey2} L ${cx2},${cy2} L ${tx},${ty}`}
+                  fill="none" stroke={T.accentDeep} strokeWidth={1.8} strokeDasharray="5 4" />;
+              })()}
             </svg>
 
             {/* cards */}
